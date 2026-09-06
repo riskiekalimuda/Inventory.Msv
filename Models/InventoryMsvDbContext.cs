@@ -17,6 +17,8 @@ namespace Inventory.Msv.Models
         {
         }
 
+        public virtual DbSet<TrxProductStock> TrxProductStocks { get; set; }    
+
         public virtual DbSet<TrxStockMutation> TrxStockMutations { get; set; }    
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -24,6 +26,21 @@ namespace Inventory.Msv.Models
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<TrxProductStock>(entity =>
+            {
+                entity.HasKey(e => e.ProductId).HasName("product_stock_pkey");
+
+                entity.ToTable("trx_product_stock");
+
+                entity.Property(e => e.ProductId)
+                .ValueGeneratedNever()
+                .HasColumnName("product_id");
+                entity.Property(e => e.CurrentStock).HasColumnName("current_stock");
+                entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            });
+
             modelBuilder.Entity<TrxStockMutation>(entity =>
             {
                 entity.HasKey(e => e.Id).HasName("trx_stock_mutation_pkey");

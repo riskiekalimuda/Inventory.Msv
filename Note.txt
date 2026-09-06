@@ -1,0 +1,1 @@
+﻿Scaffold-DbContext "Name=ConnectionStrings:InventoryMsvDBConnection" Npgsql.EntityFrameworkCore.PostgreSQL -OutputDir Models -Context InventoryMsvDbContext -Force
