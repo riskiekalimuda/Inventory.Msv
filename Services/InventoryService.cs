@@ -15,11 +15,17 @@ namespace Inventory.Msv.Services
             _mapper = mapper;
         }
 
-        public async Task<ServiceResult> InsertInventoryAsync(OrderMessage orderMessage)
+        public async Task<ServiceResult<TrxStockMutation>> InsertInventoryAsync(OrderMessage orderMessage)
         {
             if(orderMessage == null && orderMessage.TrxOrdersDetails == null    )
             {
-                return ServiceResult.Failure("OrderMessage or TrxOrdersDetails is null","INVALID PAYLOAD");    
+                return new ServiceResult<TrxStockMutation>(false)
+                {
+                    IsSuccess = false,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = "OrderMessage or TrxOrdersDetails is null",
+                    ErrorCode = "INVALID PAYLOAD"
+                };  
             }
             try
             {
@@ -31,12 +37,22 @@ namespace Inventory.Msv.Services
                     await _dbContext.TrxStockMutations.AddAsync(inventory);
                 }
                 await _dbContext.SaveChangesAsync();
-                return ServiceResult.Success();
-
+                return new ServiceResult<TrxStockMutation>(true) {
+                    IsSuccess = true,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = "Inventory inserted successfully",
+                    ErrorCode = string.Empty
+                };
             }
             catch (Exception ex)
             {
-                return ServiceResult.Failure($"Error inserting inventory: {ex.Message}", "DB_ERROR");
+                return new ServiceResult<TrxStockMutation>(false)
+                {
+                    IsSuccess = false,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = $"Error inserting inventory: {ex.Message}",
+                    ErrorCode = "DATABASE_ERROR"
+                };  
             }
         }   
     }
