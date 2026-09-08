@@ -33,7 +33,8 @@ builder.Services.AddMassTransit(x =>
         o.QueryDelay = TimeSpan.FromSeconds(10);
     });
     
-    x.AddConsumersFromNamespaceContaining<NewOrderConsumers>(); 
+    x.AddConsumersFromNamespaceContaining<NewOrderConsumers>();
+    x.AddConsumersFromNamespaceContaining<NewPurchaseConsumers>();
 
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -49,7 +50,13 @@ builder.Services.AddMassTransit(x =>
             e.Durable = true;
             e.UseMessageRetry(r => r.Interval(20, 10)); 
             e.ConfigureConsumer<NewOrderConsumers>(context);    
-        }); 
+        });
+        cfg.ReceiveEndpoint(QueueNames.PurchaseQueue.PurchaseCreatedQueue, e =>
+        {
+            e.Durable = true;
+            e.UseMessageRetry(r => r.Interval(20, 10));
+            e.ConfigureConsumer<NewPurchaseConsumers>(context);
+        });
     });
 }); 
 

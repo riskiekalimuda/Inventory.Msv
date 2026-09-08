@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using AutoMapper;
 using Inventory.Msv.Models;
 using MessageMQCommon.MQ.Messages.OrderMsv;
+using MessageMQCommon.MQ.Messages.PurchaseMsv;
 
 namespace Inventory.Msv.Profiles
 {
@@ -28,6 +29,14 @@ namespace Inventory.Msv.Profiles
                 .ForMember(dest => dest.ReferenceId, opt => opt.MapFrom(src => src.Id))
                 .ForMember(dest => dest.QtyIn, opt => opt.MapFrom(_ => 0))
                 .ForMember(dest => dest.QtyOut, opt => opt.MapFrom(src => src.Quantity));
+
+            CreateMap<PurchaseDetailMessage,  TrxStockMutation>()
+                .ForMember(dest => dest.Id, opt => opt.Ignore())
+                .ForMember(dest => dest.ProductId, opt => opt.MapFrom(src => src.ProductId))
+                .ForMember(dest => dest.ReferenceType, opt => opt.MapFrom(_ => "ORDER"))
+                .ForMember(dest => dest.ReferenceId, opt => opt.MapFrom(src => src.Id))
+                .ForMember(dest => dest.QtyIn, opt => opt.MapFrom(src => src.Quantity))
+                .ForMember(dest => dest.QtyOut, opt => opt.MapFrom(_ => 0));
         }
     }
 }
