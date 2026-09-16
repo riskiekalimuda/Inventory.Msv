@@ -1,4 +1,5 @@
 using Inventory.Msv.Consumers;
+using Inventory.Msv.Extensions;
 using Inventory.Msv.Models;
 using Inventory.Msv.Profiles;
 using Inventory.Msv.Services;
@@ -11,6 +12,9 @@ using Microsoft.EntityFrameworkCore;
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddInventoryTelemetry(builder.Configuration);
+
 builder.Services.AddControllers(); 
 
 builder.Services.AddAutoMapper(x => { },typeof(MappingProfile).Assembly);  
