@@ -49,6 +49,8 @@ namespace Inventory.Msv.Models
 
                 entity.HasIndex(e => e.ProductId, "idx_stock_mutation_product");
 
+                entity.HasIndex(e => new { e.ReferenceType, e.ReferenceId }, "uq_reference_type_no").IsUnique();
+
                 entity.Property(e => e.Id)
                 .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
