@@ -1,8 +1,10 @@
 ﻿using AutoMapper;
 using Inventory.Msv.Helper;
 using Inventory.Msv.Models;
+using MassTransit;
 using MessageMQCommon.MQ.Messages.OrderMsv;
 using MessageMQCommon.MQ.Messages.PurchaseMsv;
+using MessageMQCommon.MQ.Names;
 using MessageMQCommon.Respones;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
@@ -13,10 +15,12 @@ namespace Inventory.Msv.Services
     {
         private readonly InventoryMsvDbContext _dbContext;
         private readonly IMapper _mapper;
-        public InventoryService(InventoryMsvDbContext dbContext, IMapper mapper)
+        private readonly ISendEndpointProvider _sendEndpointProvider;
+        public InventoryService(InventoryMsvDbContext dbContext, IMapper mapper, ISendEndpointProvider sendEndpointProvider)
         {
             _dbContext = dbContext;
             _mapper = mapper;
+            _sendEndpointProvider = sendEndpointProvider;
         }
 
         public async Task<ServiceResult<TrxStockMutation>> PuchaseInventoryAsync(PurchaseMessage purchaseMessage)
@@ -102,6 +106,8 @@ namespace Inventory.Msv.Services
             //run explicit transaction to ensure all inserts are successful or rollback if any fails
             using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
+            var sendEndpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{QueueNames.OrderQueue.AddOrderResultQueue}"));
+
             try
             {
                 //Idempotensi process
@@ -115,6 +121,13 @@ namespace Inventory.Msv.Services
 
                 if (isAlreadyProcess)
                 {
+                    await sendEndpoint.Send(new OrderResultMessage
+                    {
+                        OrderNumber = orderMessage.OrderNumber,
+                        OrderResult = "CREATED"
+                    });
+
+                    await _dbContext.SaveChangesAsync();
                     await transaction.CommitAsync();
                     return IdempotentHelper.GetIdempotentSuccessResult();
                 }
@@ -129,7 +142,10 @@ namespace Inventory.Msv.Services
 
                     if (stock == null)
                     {
-                        await transaction.RollbackAsync();
+                        await sendEndpoint.Send(new OrderResultMessage { OrderNumber = orderMessage.OrderNumber, OrderResult = "REJECTED" });
+                        await _dbContext.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
                         var errMsg1 = new ServiceResult<TrxStockMutation>(false)
                         {
                             IsSuccess = false,
@@ -146,7 +162,10 @@ namespace Inventory.Msv.Services
 
                     if (stock.CurrentStock < orderDetail.Quantity)
                     {
-                        await transaction.RollbackAsync();
+                        await sendEndpoint.Send(new OrderResultMessage { OrderNumber = orderMessage.OrderNumber, OrderResult = "REJECTED" });
+                        await _dbContext.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
                         var errMsg2 = new ServiceResult<TrxStockMutation>(false)
                         {
                             IsSuccess = false,
@@ -168,6 +187,14 @@ namespace Inventory.Msv.Services
                     inventory.CreatedAt = DateTime.Now;
                     await _dbContext.TrxStockMutations.AddAsync(inventory);
                 }
+
+                await sendEndpoint.Send(new OrderResultMessage
+                {
+                    OrderNumber = orderMessage.OrderNumber,
+                    OrderResult = "CREATED"
+                });
+
+
                 await _dbContext.SaveChangesAsync();
                 await transaction.CommitAsync();
 
@@ -193,6 +220,12 @@ namespace Inventory.Msv.Services
                 // Deteksi apakah error disebabkan oleh pelanggaran Unique Constraint (Contoh untuk PostgreSQL/MySQL/SQL Server)
                 if (IdempotentHelper.IsUniqueConstraintViolation(ex))
                 {
+                    // Jika balapan lolos AnyAsync tapi tertangkap Unique Constraint, kirim pesan sukses via transaksi baru
+                    using var retryTransaction = await _dbContext.Database.BeginTransactionAsync();
+                    await sendEndpoint.Send(new OrderResultMessage { OrderNumber = orderMessage.OrderNumber, OrderResult = "CREATED" });
+                    await _dbContext.SaveChangesAsync();
+                    await retryTransaction.CommitAsync();
+
                     return IdempotentHelper.GetIdempotentSuccessResult();
                 }
 

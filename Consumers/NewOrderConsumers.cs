@@ -24,27 +24,21 @@ namespace Inventory.Msv.Consumers
         public async Task Consume(ConsumeContext<OrderMessage> context)
         {
             var orderMessage = context.Message;
-            var result = await _inventoryService.InsertInventoryAsync(orderMessage);    
+
+            var result = await _inventoryService.InsertInventoryAsync(orderMessage);
+
             if (result.IsSuccess)
             {
-                var sendEndpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{QueueNames.OrderQueue.AddOrderResultQueue}"));
-                await sendEndpoint.Send(new OrderResultMessage
-                {
-                    OrderNumber = orderMessage.OrderNumber,
-                    OrderResult = "CREATED"
-                });
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation($"Inventory updated successfully for OrderNumber: {orderMessage.OrderNumber}");
+                _logger.LogInformation($"Inventory processed successfully for OrderNumber: {orderMessage.OrderNumber}");
             }
             else
             {
-                if(result.ErrorCode == "DATABASE_ERROR")
+                if (result.ErrorCode == "DATABASE_ERROR")
                 {
-                    throw new Exception(result.ErrorMessage); 
+                    throw new Exception(result.ErrorMessage);
                 }
-                _logger.LogError($"Failed to update inventory for OrderNumber: {orderMessage.OrderNumber}. Error: {result.ErrorMessage}");
-            }   
+                _logger.LogError($"Business rule violation for OrderNumber: {orderMessage.OrderNumber}. Error: {result.ErrorMessage}");
+            }
         }   
     }
 }
