@@ -27,19 +27,47 @@ namespace Inventory.Msv.Services
         {
             if (purchaseMessage == null && purchaseMessage.Details == null)
             {
-                return new ServiceResult<TrxStockMutation>(false)
+                var payloadMsg = new ServiceResult<TrxStockMutation>(false)
                 {
                     IsSuccess = false,
                     Data = new TrxStockMutation(),
                     ErrorMessage = "PurchaseMessage or TrxPurchaseDetails is null",
                     ErrorCode = "INVALID PAYLOAD"
                 };
+
+                if(Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status",payloadMsg.ErrorMessage);
+                }
+                return payloadMsg;
             }
             //run explicit transaction to ensure all inserts are successful or rollback if any fails
             using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
+            var sendEndpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{QueueNames.PurchaseQueue.PurchaseCreatedResultQueue}"));
+
             try
             {
+                var incomingIds = purchaseMessage.Details
+                                  .Select(x => x.Id)
+                                  .ToList();
+
+                var isAlreadyProccess = await _dbContext.TrxStockMutations
+                                        .AnyAsync(x => x.ReferenceType == "Purchase" && incomingIds.Contains(x.ReferenceId));
+
+                if(isAlreadyProccess)
+                {
+                    await sendEndpoint.Send(new PurchaseResultMessage
+                    {
+                        PurchaseNumber = purchaseMessage.PurchaseNumber,
+                        PurchaseResult = "CREATED"
+                    });
+
+                    await _dbContext.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    return IdempotentHelper.GetIdempotentSuccessResult("Purchase");
+                }
+
                 foreach (var purchaseDetail in purchaseMessage.Details)
                 {
                     var stock = await _dbContext.TrxProductStocks
@@ -62,25 +90,61 @@ namespace Inventory.Msv.Services
                     inventory.CreatedAt = DateTime.Now;
                     await _dbContext.TrxStockMutations.AddAsync(inventory);
                 }
+
+                await sendEndpoint.Send(new PurchaseResultMessage
+                {
+                    PurchaseNumber = purchaseMessage.PurchaseNumber,
+                    PurchaseResult = "CREATED"
+                });
+
                 await _dbContext.SaveChangesAsync();
                 await transaction.CommitAsync();
-                return new ServiceResult<TrxStockMutation>(true)
+                var resultMsg = new ServiceResult<TrxStockMutation>(true)
                 {
                     IsSuccess = true,
                     Data = new TrxStockMutation(),
                     ErrorMessage = "Inventory inserted successfully",
                     ErrorCode = string.Empty
                 };
+                if (Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status", resultMsg.ErrorMessage);
+                }
+                return resultMsg;
+            }
+            catch (DbUpdateException ex)
+            {
+                await transaction.RollbackAsync();
+
+                // Deteksi apakah error disebabkan oleh pelanggaran Unique Constraint (Contoh untuk PostgreSQL/MySQL/SQL Server)
+                if (IdempotentHelper.IsUniqueConstraintViolation(ex))
+                {
+                    // Jika balapan lolos AnyAsync tapi tertangkap Unique Constraint, kirim pesan sukses via transaksi baru
+                    using var retryTransaction = await _dbContext.Database.BeginTransactionAsync();
+                    await sendEndpoint.Send(new PurchaseResultMessage { PurchaseNumber = purchaseMessage.PurchaseNumber, PurchaseResult = "CREATED" });
+                    await _dbContext.SaveChangesAsync();
+                    await retryTransaction.CommitAsync();
+
+                    return IdempotentHelper.GetIdempotentSuccessResult("Order");
+                }
+
+                // Jika DbUpdateException disebabkan oleh hal lain (misal: constraint foreign key, dll)
+                return IdempotentHelper.GetDatabaseErrorResult(ex.Message);
             }
             catch (Exception ex)
             {
-                return new ServiceResult<TrxStockMutation>(false)
+               var exceptionMsg = new ServiceResult<TrxStockMutation>(false)
                 {
                     IsSuccess = false,
                     Data = new TrxStockMutation(),
                     ErrorMessage = $"Error inserting inventory: {ex.Message}",
                     ErrorCode = "DATABASE_ERROR"
                 };
+                if(Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status", exceptionMsg.ErrorMessage);
+                }
+                return exceptionMsg;
             }
             
         }
@@ -129,7 +193,7 @@ namespace Inventory.Msv.Services
 
                     await _dbContext.SaveChangesAsync();
                     await transaction.CommitAsync();
-                    return IdempotentHelper.GetIdempotentSuccessResult();
+                    return IdempotentHelper.GetIdempotentSuccessResult("Order");
                 }
 
 
@@ -226,7 +290,7 @@ namespace Inventory.Msv.Services
                     await _dbContext.SaveChangesAsync();
                     await retryTransaction.CommitAsync();
 
-                    return IdempotentHelper.GetIdempotentSuccessResult();
+                    return IdempotentHelper.GetIdempotentSuccessResult("Order");
                 }
 
                 // Jika DbUpdateException disebabkan oleh hal lain (misal: constraint foreign key, dll)

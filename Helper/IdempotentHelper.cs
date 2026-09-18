@@ -8,9 +8,9 @@ namespace Inventory.Msv.Helper
 {
     public static class IdempotentHelper
     {
-        public static ServiceResult<TrxStockMutation> GetIdempotentSuccessResult()
+        public static ServiceResult<TrxStockMutation> GetIdempotentSuccessResult(string name)
         {
-            var msg = "Order details for this message have already been processed (Idempotent Hit).";
+            var msg = $"{name} details for this message have already been processed (Idempotent Hit).";
             var successMsg = new ServiceResult<TrxStockMutation>(true)
             {
                 IsSuccess = true, // WAJIB TRUE agar Consumer mengirim ACK ke RabbitMQ

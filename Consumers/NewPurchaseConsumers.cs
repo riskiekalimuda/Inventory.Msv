@@ -1,7 +1,9 @@
 ﻿using Inventory.Msv.Services;
 using MassTransit;
+using MessageMQCommon.MQ.Messages.OrderMsv;
 using MessageMQCommon.MQ.Messages.PurchaseMsv;
 using MessageMQCommon.MQ.Names;
+using static MassTransit.ValidationResultExtensions;
 
 namespace Inventory.Msv.Consumers
 {
@@ -19,30 +21,20 @@ namespace Inventory.Msv.Consumers
         public async Task Consume(ConsumeContext<PurchaseMessage> context)
         {
             var addPurchhase = context.Message;
-            try
+            var result = await _inventoryService.PuchaseInventoryAsync(addPurchhase);
+            if (result.IsSuccess)
             {
-                var result = await _inventoryService.PuchaseInventoryAsync(addPurchhase);
-                if (result.IsSuccess)
-                {
-                    var sendEndpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{QueueNames.PurchaseQueue.PurchaseCreatedResultQueue}"));
-                    await sendEndpoint.Send(
-                        new PurchaseResultMessage
-                        {
-                            PurchaseNumber = addPurchhase.PurchaseNumber,
-                            PurchaseResult = "CREATED"
-                        });
-                    _logger.LogInformation("NewPurchase message processed successfully for PurchaseNumber: {PurchaseNumber}", addPurchhase.PurchaseNumber);
-                }
-                else
-                {
-                    _logger.LogError("Failed to process NewPurchase message for PurchaseNumber: {PurchaseNumber}. Error: {ErrorMessage}", addPurchhase.PurchaseNumber, result.ErrorMessage);
-                }
+                _logger.LogInformation("NewPurchase message processed successfully for PurchaseNumber: {PurchaseNumber}", addPurchhase.PurchaseNumber);
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Error handling NewPurchase message");
-                throw;
+                _logger.LogError("Failed to process NewPurchase message for PurchaseNumber: {PurchaseNumber}. Error: {ErrorMessage}", addPurchhase.PurchaseNumber, result.ErrorMessage);
             }
+            if (result.ErrorCode == "DATABASE_ERROR")
+            {
+                throw new Exception(result.ErrorMessage);
+            }
+            _logger.LogError($"Business rule violation for PurchaseNumber: {addPurchhase.PurchaseNumber}. Error: {result.ErrorMessage}");
         }
     }
 }
