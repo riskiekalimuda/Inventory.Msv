@@ -26,44 +26,7 @@ builder.Services.AddDbContext<InventoryMsvDbContext>(options =>
 
 builder.Services.AddScoped<InventoryService>();
 
-var rabbitMQSetting = builder.Configuration.GetSection("RabbitMqSettings").Get<RabbitMQParameter>()??new RabbitMQParameter();
-
-builder.Services.AddMassTransit(x =>
-{
-    x.AddEntityFrameworkOutbox<InventoryMsvDbContext>(o =>
-    {
-        o.UsePostgres();
-        o.UseBusOutbox();
-        o.QueryDelay = TimeSpan.FromSeconds(10);
-    });
-    
-    x.AddConsumersFromNamespaceContaining<NewOrderConsumers>();
-    x.AddConsumersFromNamespaceContaining<NewPurchaseConsumers>();
-
-    x.UsingRabbitMq((context, cfg) =>
-    {
-
-        cfg.Host(rabbitMQSetting.Host, rabbitMQSetting.VirtualHost, h =>
-        {
-            h.Username(rabbitMQSetting.Username);
-            h.Password(rabbitMQSetting.Password);
-        });
-
-        cfg.ReceiveEndpoint(QueueNames.OrderQueue.AddOrderQueue, e =>
-        {
-            e.Durable = true;
-            e.UseMessageRetry(r => r.Interval(20, 10)); 
-            e.ConfigureConsumer<NewOrderConsumers>(context);    
-        });
-        cfg.ReceiveEndpoint(QueueNames.PurchaseQueue.PurchaseCreatedQueue, e =>
-        {
-            e.Durable = true;
-            e.UseMessageRetry(r => r.Interval(20, 10));
-            e.ConfigureConsumer<NewPurchaseConsumers>(context);
-        });
-    });
-}); 
-
+builder.Services.AddCustomMassTransit(builder.Configuration);
 
 var app = builder.Build();
 app.MapControllers();
