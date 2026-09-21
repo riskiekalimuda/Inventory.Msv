@@ -23,6 +23,63 @@ namespace Inventory.Msv.Services
             _sendEndpointProvider = sendEndpointProvider;
         }
 
+        public async Task<ServiceResult<DeleteOrderMessage>> DeleteOrderAsync(DeleteOrderMessage deleteOrderMessage)
+        {
+            if (deleteOrderMessage == null)
+            {
+                return new ServiceResult<DeleteOrderMessage>(false) { IsSuccess = false, ErrorMessage = "Payload is null" };
+            }
+
+            using var transaction = await _dbContext.Database.BeginTransactionAsync();
+            try
+            {
+                foreach (var orderItem in deleteOrderMessage.ListDeleteOrderDetails)
+                {
+                    var prodStock = await _dbContext.TrxProductStocks.FirstOrDefaultAsync(x => x.ProductId == orderItem.ProductId);
+                    if (prodStock == null)
+                    {
+                        var newStok = _mapper.Map<TrxProductStock>(orderItem);
+                        await _dbContext.TrxProductStocks.AddAsync(newStok);
+                    }
+                    else
+                    {
+                        prodStock?.CurrentStock += orderItem.Qty;
+                        prodStock?.UpdatedAt = DateTime.Now;
+                        _dbContext.TrxProductStocks.Update(prodStock);
+                    }
+
+                    var mutation = await _dbContext.TrxStockMutations.FirstOrDefaultAsync(x => x.ProductId == orderItem.ProductId
+                    && x.ReferenceType == "Order"
+                    && x.ReferenceId == orderItem.Id
+                    && x.QtyOut == orderItem.Qty);
+
+                    if (mutation != null)
+                    {
+                        _dbContext.TrxStockMutations.Remove(mutation);
+                    }
+                }
+
+                await _dbContext.SaveChangesAsync();
+                await _dbContext.Database.CommitTransactionAsync();
+
+                return new ServiceResult<DeleteOrderMessage>(true)
+                {
+                    IsSuccess = true,
+                    Data = deleteOrderMessage
+                };
+            }
+            catch (Exception ex)
+            {
+                await _dbContext.Database.RollbackTransactionAsync();
+                return new ServiceResult<DeleteOrderMessage>(false)
+                {
+                    IsSuccess = false,
+                    Data = deleteOrderMessage,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
         public async Task<ServiceResult<TrxStockMutation>> PuchaseInventoryAsync(PurchaseMessage purchaseMessage)
         {
             if (purchaseMessage == null && purchaseMessage.Details == null)
@@ -35,9 +92,9 @@ namespace Inventory.Msv.Services
                     ErrorCode = "INVALID PAYLOAD"
                 };
 
-                if(Activity.Current != null)
+                if (Activity.Current != null)
                 {
-                    Activity.Current.SetTag("biz.inventory.status",payloadMsg.ErrorMessage);
+                    Activity.Current.SetTag("biz.inventory.status", payloadMsg.ErrorMessage);
                 }
                 return payloadMsg;
             }
@@ -55,7 +112,7 @@ namespace Inventory.Msv.Services
                 var isAlreadyProccess = await _dbContext.TrxStockMutations
                                         .AnyAsync(x => x.ReferenceType == "Purchase" && incomingIds.Contains(x.ReferenceId));
 
-                if(isAlreadyProccess)
+                if (isAlreadyProccess)
                 {
                     await sendEndpoint.Send(new PurchaseResultMessage
                     {
@@ -133,20 +190,20 @@ namespace Inventory.Msv.Services
             }
             catch (Exception ex)
             {
-               var exceptionMsg = new ServiceResult<TrxStockMutation>(false)
+                var exceptionMsg = new ServiceResult<TrxStockMutation>(false)
                 {
                     IsSuccess = false,
                     Data = new TrxStockMutation(),
                     ErrorMessage = $"Error inserting inventory: {ex.Message}",
                     ErrorCode = "DATABASE_ERROR"
                 };
-                if(Activity.Current != null)
+                if (Activity.Current != null)
                 {
                     Activity.Current.SetTag("biz.inventory.status", exceptionMsg.ErrorMessage);
                 }
                 return exceptionMsg;
             }
-            
+
         }
 
         public async Task<ServiceResult<TrxStockMutation>> InsertInventoryAsync(OrderMessage orderMessage)
@@ -198,7 +255,7 @@ namespace Inventory.Msv.Services
 
 
                 foreach (var orderDetail in orderMessage.TrxOrdersDetails)
-                { 
+                {
                     //locking the stock row for update to prevent race
                     var stock = await _dbContext.TrxProductStocks
                                 .FromSqlRaw("SELECT * FROM trx_product_stock WHERE product_id = {0} FOR UPDATE", orderDetail.ProductId)
@@ -217,9 +274,9 @@ namespace Inventory.Msv.Services
                             ErrorCode = "PRODUCT_NOT_FOUND"
                         };
 
-                        if (Activity.Current !=null)
+                        if (Activity.Current != null)
                         {
-                            Activity.Current.SetTag("biz.inventory.status", errMsg1.ErrorMessage );
+                            Activity.Current.SetTag("biz.inventory.status", errMsg1.ErrorMessage);
                         }
                         return errMsg1;
                     }
@@ -263,7 +320,7 @@ namespace Inventory.Msv.Services
                 await transaction.CommitAsync();
 
 
-               var errMsg = new ServiceResult<TrxStockMutation>(true)
+                var errMsg = new ServiceResult<TrxStockMutation>(true)
                 {
                     IsSuccess = true,
                     Data = new TrxStockMutation(),

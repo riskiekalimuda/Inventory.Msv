@@ -24,6 +24,7 @@ namespace Inventory.Msv.Extensions
                 x.AddConsumersFromNamespaceContaining<NewOrderConsumers>();
                 x.AddConsumersFromNamespaceContaining<NewPurchaseConsumers>();
                 x.AddConsumersFromNamespaceContaining<UpdateOrderConsumers>();
+                x.AddConsumersFromNamespaceContaining<DeleteOrderConsumer>();
 
                 x.UsingRabbitMq((context, cfg) =>
                 {
@@ -51,6 +52,12 @@ namespace Inventory.Msv.Extensions
                         e.Durable = true;
                         e.UseMessageRetry(r => r.Interval(20, 10));
                         e.ConfigureConsumer<UpdateOrderConsumers>(context);
+                    });
+                    cfg.ReceiveEndpoint(QueueNames.OrderQueue.DeleteOrderQueue, e =>
+                    {
+                        e.Durable = true;
+                        e.UseMessageRetry(r => r.Interval(20, 10));
+                        e.ConfigureConsumer<DeleteOrderConsumer>(context);
                     });
                 });
             });
