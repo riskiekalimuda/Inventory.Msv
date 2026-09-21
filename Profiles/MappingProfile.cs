@@ -37,6 +37,12 @@ namespace Inventory.Msv.Profiles
                 .ForMember(dest => dest.ReferenceId, opt => opt.MapFrom(src => src.Id))
                 .ForMember(dest => dest.QtyIn, opt => opt.MapFrom(src => src.Quantity))
                 .ForMember(dest => dest.QtyOut, opt => opt.MapFrom(_ => 0));
+
+            CreateMap<UpdateOrderDetailMessage, TrxStockMutation>()
+                .ForMember(dest => dest.ProductId, opt => opt.MapFrom(src => src.ProductId))
+                .ForMember(dest => dest.ReferenceId, opt => opt.MapFrom(src => src.Id))
+                .ForMember(dest => dest.QtyIn, opt => opt.MapFrom(_ => 0))
+                .ForMember(dest => dest.QtyOut, opt => opt.MapFrom(src => src.Quantity));
         }
     }
 }

@@ -314,5 +314,165 @@ namespace Inventory.Msv.Services
 
             }
         }
+
+        public async Task<ServiceResult<TrxStockMutation>> UpdateInventoryAsync(UpdateOrderMessage updateOrderMessage)
+        {
+            if (updateOrderMessage == null || updateOrderMessage.TrxOrdersDetails == null)
+            {
+                var payloadMsg = new ServiceResult<TrxStockMutation>(false)
+                {
+                    IsSuccess = false,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = "OrderMessage or TrxOrdersDetails is null",
+                    ErrorCode = "INVALID PAYLOAD"
+                };
+                if (Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status", payloadMsg.ErrorMessage);
+                }
+                return payloadMsg;
+            }
+
+            using var transaction = await _dbContext.Database.BeginTransactionAsync();
+            var sendEndpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{QueueNames.OrderQueue.UpdateOrderResultQueue}"));
+
+            try
+            {
+                // 1. Ambil mutasi stok lama berdasarkan Detail Order ID
+                var incomingOrdrDtlIds = updateOrderMessage.TrxOrdersDetails.Select(x => x.Id).ToList();
+
+                var oldMutations = await _dbContext.TrxStockMutations
+                    .Where(x => x.ReferenceType == "Order" && incomingOrdrDtlIds.Contains(x.ReferenceId))
+                    .ToListAsync();
+
+                // 2. Loop setiap detail order baru untuk penyesuaian stok produk
+                foreach (var orderDetail in updateOrderMessage.TrxOrdersDetails)
+                {
+                    // Kunci baris stok produk untuk menghindari race condition
+                    var stock = await _dbContext.TrxProductStocks
+                                .FromSqlRaw("SELECT * FROM trx_product_stock WHERE product_id = {0} FOR UPDATE", orderDetail.ProductId)
+                                .SingleOrDefaultAsync();
+
+                    if (stock == null)
+                    {
+                        await sendEndpoint.Send(new UpdateOrderResultMessage { OrderNumber = updateOrderMessage.OrderNumber, UpdateOrderResult = "REJECTED" });
+                        await transaction.RollbackAsync();
+
+                        return new ServiceResult<TrxStockMutation>(false)
+                        {
+                            IsSuccess = false,
+                            ErrorMessage = $"Product Id = {orderDetail.ProductId} not found.",
+                            ErrorCode = "PRODUCT_NOT_FOUND"
+                        };
+                    }
+
+                    // Cari tahu apakah item ini sudah ada di mutasi lama (berdasarkan ReferenceId)
+                    var oldMutation = oldMutations.FirstOrDefault(x => x.ReferenceId == orderDetail.Id);
+                    int quantityDelta = 0;
+
+                    if (oldMutation != null)
+                    {
+                        // JIKA ITEM SUDAH ADA: Delta = Qty Baru - QtyOut Lama
+                        quantityDelta = orderDetail.Quantity - oldMutation.QtyOut;
+
+                        // Update kolom QtyOut dengan kuantitas yang baru
+                        oldMutation.QtyOut = orderDetail.Quantity;
+                        oldMutation.QtyIn = 0; // Tetap 0 karena ini transaksi pengeluaran stok (Order)
+                        oldMutation.CreatedAt = DateTime.Now;
+                    }
+                    else
+                    {
+                        // JIKA ITEM BARU TAMBAHAN: Delta adalah seluruh kuantitas item baru tersebut
+                        quantityDelta = orderDetail.Quantity;
+
+                        // Buat baris mutasi stok baru menggunakan properti QtyIn & QtyOut
+                        var newInventory = _mapper.Map<TrxStockMutation>(orderDetail);
+                        newInventory.ReferenceType = "Order";
+                        newInventory.QtyOut = orderDetail.Quantity;
+                        newInventory.QtyIn = 0;
+                        newInventory.CreatedAt = DateTime.Now;
+                        await _dbContext.TrxStockMutations.AddAsync(newInventory);
+                    }
+
+                    // 3. Validasi kecukupan stok berdasarkan nilai Delta
+                    if (quantityDelta > 0 && stock.CurrentStock < quantityDelta)
+                    {
+                        await sendEndpoint.Send(new UpdateOrderResultMessage { OrderNumber = updateOrderMessage.OrderNumber, UpdateOrderResult = "REJECTED" });
+                        await transaction.RollbackAsync();
+
+                        return new ServiceResult<TrxStockMutation>(false)
+                        {
+                            IsSuccess = false,
+                            ErrorMessage = $"Insufficient stock for Product Id = {orderDetail.ProductId}. Available: {stock.CurrentStock}, Requested Extra: {quantityDelta}",
+                            ErrorCode = "INSUFFICIENT_STOCK"
+                        };
+                    }
+
+                    // 4. Potong stok master di tabel produk menggunakan nilai Delta
+                    stock.CurrentStock -= quantityDelta;
+                    stock.UpdatedAt = DateTime.Now;
+                }
+
+                // 5. Hapus mutasi jika ada item yang sengaja dihapus dari list order oleh user
+                var missingMutations = oldMutations.Where(old => !incomingOrdrDtlIds.Contains(old.ReferenceId)).ToList();
+                foreach (var removedMutation in missingMutations)
+                {
+                    var stockToRestore = await _dbContext.TrxProductStocks
+                        .FromSqlRaw("SELECT * FROM trx_product_stock WHERE product_id = {0} FOR UPDATE", removedMutation.ProductId)
+                        .SingleOrDefaultAsync();
+
+                    if (stockToRestore != null)
+                    {
+                        // Kembalikan stok master sebesar QtyOut yang dibatalkan
+                        stockToRestore.CurrentStock += removedMutation.QtyOut;
+                        stockToRestore.UpdatedAt = DateTime.Now;
+                    }
+                    _dbContext.TrxStockMutations.Remove(removedMutation);
+                }
+
+                // 6. Beritahu sistem bahwa proses update berhasil
+                await sendEndpoint.Send(new UpdateOrderResultMessage
+                {
+                    OrderNumber = updateOrderMessage.OrderNumber,
+                    UpdateOrderResult = "UPDATED"
+                });
+
+                await _dbContext.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                var successMsg = new ServiceResult<TrxStockMutation>(true)
+                {
+                    IsSuccess = true,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = "Inventory updated successfully",
+                    ErrorCode = string.Empty
+                };
+
+                if (Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status", successMsg.ErrorMessage);
+                }
+                return successMsg;
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                var errMsg = new ServiceResult<TrxStockMutation>(false)
+                {
+                    IsSuccess = false,
+                    Data = new TrxStockMutation(),
+                    ErrorMessage = $"Error updating inventory: {ex.Message}",
+                    ErrorCode = "DATABASE_ERROR"
+                };
+
+                if (Activity.Current != null)
+                {
+                    Activity.Current.SetTag("biz.inventory.status", errMsg.ErrorMessage);
+                }
+                return errMsg;
+            }
+        }
+
     }
 }
